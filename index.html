@@ -250,6 +250,17 @@
 
 <script>
 /* =========================================================
+   حارس أخطاء عام — لو حصل خطأ غير متوقع في الكود، تظهر رسالة
+   واضحة في الصفحة بدل أن تبقى الشاشة فارغة بصمت تام
+   ========================================================= */
+window.addEventListener('error', (e)=>{
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;top:0;right:0;left:0;background:#B91C1C;color:#fff;padding:14px;font-size:12px;z-index:9999;direction:rtl;font-family:sans-serif;';
+  banner.textContent = '⚠️ خطأ تقني في التطبيق: ' + (e.message || 'غير معروف') + ' — السطر ' + (e.lineno||'?');
+  document.body && document.body.prepend(banner);
+});
+
+/* =========================================================
    المصادقة — Microsoft Graph API عبر MSAL.js
    حساب شخصي، صلاحية Files.ReadWrite فقط (الوصول لملفاتك في OneDrive)
    ========================================================= */
@@ -1137,6 +1148,7 @@ async function refreshRecent(){
 async function retryOne(id){
   showToast('جاري إعادة المحاولة...');
   await attemptSync();
+}
 
 /* =========================================================
    حالة المزامنة — هيكل جاهز لربط Microsoft Graph API
