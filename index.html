@@ -1187,7 +1187,7 @@ function buildRowForEntry(entry){
     };
   }
   if(entry.type === 'finance'){
-    // tblSegel: م،التاريخ،التصنيف،المحور،داخل،خارج،الرصيد،نوع العمل،صاحب العمل/عميل،البيان،حالة التحصيل،ملاحظات
+    // tblSegel: م،التاريخ،التصنيف،المحور،داخل،خارج،الرصيد،نوع العمل،صاحب العمل/عميل،البيان،حالة التحصيل،ملاحظات،مؤهل 10% (محسوب تلقائياً)
     const isIn = getCategoryInfo(entry.cat).flow === 'in';
     const partyField = entry.party || entry.client || '';
     let amountIn = null, amountOut = null;
@@ -1201,7 +1201,7 @@ function buildRowForEntry(entry){
     return {
       table: 'tblSegel', file: 'mali',
       values: [null, entry.date, entry.cat, null, amountIn, amountOut, null,
-        entry.workType||'', partyField, entry.desc||'', entry.collectStatus||'', entry.notes||''],
+        entry.workType||'', partyField, entry.desc||'', entry.collectStatus||'', entry.notes||'', null],
     };
   }
   if(entry.type === 'moto_part'){
@@ -1217,7 +1217,7 @@ function buildRowForEntry(entry){
     return {
       table: 'tblSegel', file: 'mali',
       values: [null, entry.date, '🏍️ مكنة — شراء زيت بالجملة', null, null, entry.total, null,
-        '', '', `${entry.qty} لتر × ${entry.price} جنيه`, '', entry.notes||''],
+        '', '', `${entry.qty} لتر × ${entry.price} جنيه`, '', entry.notes||'', null],
     };
   }
   return null;
