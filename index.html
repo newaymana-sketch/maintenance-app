@@ -102,6 +102,18 @@
   .pill.synced{background:#E3F8EC; color:#15803D;}
   .pill.pending{background:#FFF3D6; color:#92650A;}
   .pill.failed{background:#FDE2E2; color:#B91C1C;}
+  .ticket-wrap{margin-bottom:8px;}
+  .ticket-wrap .ticket{margin-bottom:0; border-radius:10px 10px 0 0;}
+  .error-detail{
+    background:#FDE2E2; border:2px dashed var(--tile-border); border-top:none;
+    border-radius:0 0 10px 10px; padding:8px 14px; display:flex; align-items:center;
+    justify-content:space-between; gap:8px;
+  }
+  .error-detail span{font-size:11px; color:#7A1313; flex:1; word-break:break-word;}
+  .error-detail button{
+    background:#B91C1C; color:#fff; border:none; border-radius:7px; padding:6px 10px;
+    font-size:11px; font-weight:700; white-space:nowrap;
+  }
   .empty-state{
     text-align:center; padding:30px 10px; color:var(--ink-dim); font-size:13px;
     border:1px dashed var(--border); border-radius:12px;
@@ -1096,7 +1108,13 @@ async function refreshRecent(){
     let pillClass = r.synced ? 'synced' : 'pending';
     let pillText = r.synced ? 'متزامن' : 'محلي';
     if(!r.synced && r.syncError){ pillClass = 'failed'; pillText = 'فشلت المزامنة'; }
+    const errorBlock = (!r.synced && r.syncError) ? `
+      <div class="error-detail">
+        <span>${r.syncError}</span>
+        <button onclick="retryOne(${r.id})">إعادة المحاولة</button>
+      </div>` : '';
     return `
+      <div class="ticket-wrap">
       <div class="ticket">
         <div class="meta">
           <div class="top">${r.label||r.type}</div>
@@ -1105,9 +1123,15 @@ async function refreshRecent(){
         <div class="amt">${(r.amount||0).toFixed(0)} ج</div>
         <div class="pill ${pillClass}">${pillText}</div>
       </div>
+      ${errorBlock}
+      </div>
     `;
   }).join('');
 }
+
+async function retryOne(id){
+  showToast('جاري إعادة المحاولة...');
+  await attemptSync();
 
 /* =========================================================
    حالة المزامنة — هيكل جاهز لربط Microsoft Graph API
