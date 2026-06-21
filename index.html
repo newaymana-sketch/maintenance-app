@@ -348,6 +348,13 @@ function encodeGraphPath(path){
   return path.split('/').map(encodeURIComponent).join('/');
 }
 
+/* بيانات كل جدول: ورقة العمل، صف أول بيانات حقيقية، آخر حرف عمود (لبناء عنوان النطاق) */
+const TABLE_META = {
+  tblFuji:    { sheet: '📋 سجل_العمل',     firstDataRow: 5,   lastCol: 'S', keyCol: 'B' },  // B = التاريخ
+  tblSegel:   { sheet: '📋 السجل اليومي',  firstDataRow: 5,   lastCol: 'M', keyCol: 'B' },  // B = التاريخ
+  tblHistory: { sheet: '🏍️ محور المكنة', firstDataRow: 141, lastCol: 'I', keyCol: 'B' },  // B = تاريخ التغيير
+};
+
 async function graphGetTableRows(fileKey, tableName, columnName){
   const token = await getGraphToken();
   if(!token) return null;
@@ -361,24 +368,78 @@ async function graphGetTableRows(fileKey, tableName, columnName){
   return (data.text || []).slice(1).map(r=>r[0]).filter(v=>v !== '' && v !== null);
 }
 
-async function graphAddTableRow(fileKey, tableName, rowValues){
+/* البحث عن أول صف فارغ فعلياً (بعد آخر بيانات حقيقية) — يقرأ عمود المفتاح فقط، سريع وخفيف */
+async function findFirstEmptyRow(fileKey, tableName){
   const token = await getGraphToken();
   if(!token) throw new Error('لا يوجد رمز دخول صالح');
+  const meta = TABLE_META[tableName];
   const fileName = ONEDRIVE_FILES[fileKey];
-  const url = `${GRAPH_BASE}${encodeGraphPath(fileName)}:/workbook/tables('${tableName}')/rows/add`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ values: [rowValues] }),
-  });
-  if(!res.ok){
-    const errText = await res.text();
-    throw new Error(`فشلت الكتابة (${res.status}): ${errText}`);
+  const sheetPart = encodeURIComponent(meta.sheet);
+  // نقرأ عمود المفتاح بالكامل من أول صف بيانات حتى نهاية الجدول الممدود لنحدد آخر صف مكتوب فعلياً
+  const lastPossibleRow = meta.firstDataRow + 1500; // سعة كافية أكبر من أي مدى متوقع
+  const rangeAddr = `${meta.keyCol}${meta.firstDataRow}:${meta.keyCol}${lastPossibleRow}`;
+  const url = `${GRAPH_BASE}${encodeGraphPath(fileName)}:/workbook/worksheets/${sheetPart}/range(address='${rangeAddr}')`;
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if(!res.ok) throw new Error('فشل تحديد آخر صف: '+res.status);
+  const data = await res.json();
+  const values = data.values || [];
+  let lastFilledIndex = -1;
+  for(let i=0; i<values.length; i++){
+    if(values[i][0] !== '' && values[i][0] !== null) lastFilledIndex = i;
   }
-  return await res.json();
+  return meta.firstDataRow + lastFilledIndex + 1; // الصف التالي مباشرة بعد آخر بيانات
+}
+
+/* كتابة صف جديد مباشرة في أول صف فارغ فعلياً، بدل الإضافة في نهاية مدى الجدول الممدود */
+/* تحويل {B:'x', C:'y', H:'z'} إلى مجموعات أعمدة متجاورة لتقليل عدد طلبات الشبكة
+   مثال: B,C,D,E مجموعة واحدة، فجوة عند F,G (محسوبة)، ثم H,I,J... مجموعة ثانية */
+function groupContiguousColumns(cells){
+  const colToNum = (c)=> c.split('').reduce((acc,ch)=>acc*26+(ch.charCodeAt(0)-64), 0);
+  const entries = Object.keys(cells)
+    .map(col => ({col, num: colToNum(col), val: cells[col]}))
+    .sort((a,b)=>a.num-b.num);
+  const groups = [];
+  let current = null;
+  for(const e of entries){
+    if(current && e.num === current.endNum + 1){
+      current.endCol = e.col; current.endNum = e.num; current.values.push(e.val);
+    } else {
+      if(current) groups.push(current);
+      current = {startCol: e.col, endCol: e.col, endNum: e.num, values: [e.val]};
+    }
+  }
+  if(current) groups.push(current);
+  return groups;
+}
+
+/* كتابة صف جديد بدون لمس أي عمود محسوب — فقط الأعمدة الحقيقية، في أول صف فارغ فعلياً */
+async function graphAddTableRow(fileKey, tableName, cells){
+  const token = await getGraphToken();
+  if(!token) throw new Error('لا يوجد رمز دخول صالح');
+  const meta = TABLE_META[tableName];
+  const fileName = ONEDRIVE_FILES[fileKey];
+  const sheetPart = encodeURIComponent(meta.sheet);
+
+  const targetRow = await findFirstEmptyRow(fileKey, tableName);
+  const groups = groupContiguousColumns(cells);
+
+  for(const g of groups){
+    const rangeAddr = `${g.startCol}${targetRow}:${g.endCol}${targetRow}`;
+    const url = `${GRAPH_BASE}${encodeGraphPath(fileName)}:/workbook/worksheets/${sheetPart}/range(address='${rangeAddr}')`;
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: [g.values] }),
+    });
+    if(!res.ok){
+      const errText = await res.text();
+      throw new Error(`فشلت الكتابة (${res.status}): ${errText}`);
+    }
+  }
+  return { row: targetRow };
 }
 
 /* =========================================================
@@ -1178,16 +1239,22 @@ async function refreshSyncStatus(){
    ========================================================= */
 function buildRowForEntry(entry){
   if(entry.type === 'visit'){
-    // tblFuji: م،التاريخ،العميل،الموقع،رقم المصعد،الشهر،السنة،نوع الزيارة،وصف العمل،كود العطل،الجزء المستبدل،حالة المصعد،تم التحصيل،المبلغ المحصل،ساعات العمل،المسافة،سعر الكم،تكلفة التنقل،ملاحظات
+    // tblFuji أعمدة: A=م(صيغة) B=التاريخ C=العميل D=الموقع E=رقم المصعد F=الشهر(صيغة) G=السنة(صيغة)
+    // H=نوع الزيارة I=وصف العمل J=كود العطل K=الجزء المستبدل L=حالة المصعد M=تم التحصيل
+    // N=المبلغ المحصل O=ساعات العمل P=المسافة Q=سعر الكم(صيغة) R=تكلفة التنقل(صيغة) S=ملاحظات
     return {
       table: 'tblFuji', file: 'fuji',
-      values: [null, entry.date, entry.client, entry.location||'', entry.elevNum, null, null,
-        entry.visitType, entry.details, entry.faultCode, entry.replacedPart, entry.status,
-        entry.collected, entry.collect, entry.workHours, entry.km, null, null, entry.notes||''],
+      cells: {
+        B: entry.date, C: entry.client, D: entry.location||'', E: entry.elevNum,
+        H: entry.visitType, I: entry.details, J: entry.faultCode, K: entry.replacedPart,
+        L: entry.status, M: entry.collected, N: entry.collect, O: entry.workHours,
+        P: entry.km, S: entry.notes||'',
+      },
     };
   }
   if(entry.type === 'finance'){
-    // tblSegel: م،التاريخ،التصنيف،المحور،داخل،خارج،الرصيد،نوع العمل،صاحب العمل/عميل،البيان،حالة التحصيل،ملاحظات،مؤهل 10% (محسوب تلقائياً)
+    // tblSegel أعمدة: A=م(صيغة) B=التاريخ C=التصنيف D=المحور(صيغة) E=داخل F=خارج G=الرصيد(صيغة)
+    // H=نوع العمل I=صاحب العمل/عميل J=البيان K=حالة التحصيل L=ملاحظات M=مؤهل10%(صيغة)
     const isIn = getCategoryInfo(entry.cat).flow === 'in';
     const partyField = entry.party || entry.client || '';
     let amountIn = null, amountOut = null;
@@ -1200,24 +1267,32 @@ function buildRowForEntry(entry){
     }
     return {
       table: 'tblSegel', file: 'mali',
-      values: [null, entry.date, entry.cat, null, amountIn, amountOut, null,
-        entry.workType||'', partyField, entry.desc||'', entry.collectStatus||'', entry.notes||'', null],
+      cells: {
+        B: entry.date, C: entry.cat, E: amountIn, F: amountOut,
+        H: entry.workType||'', I: partyField, J: entry.desc||'',
+        K: entry.collectStatus||'', L: entry.notes||'',
+      },
     };
   }
   if(entry.type === 'moto_part'){
-    // tblHistory: م،تاريخ التغيير،اسم القطعة،كم عند الخلع،كم عند التركيب،العمر الفعلي،التكلفة،مصدر الشراء،ملاحظات
+    // tblHistory أعمدة: A=م(صيغة) B=تاريخ التغيير C=اسم القطعة D=كم عند الخلع E=كم عند التركيب(صيغة)
+    // F=العمر الفعلي(صيغة) G=التكلفة H=مصدر الشراء I=ملاحظات
     return {
       table: 'tblHistory', file: 'mali',
-      values: [null, entry.date, entry.partName, entry.kmRemoved, entry.kmInstalled, null,
-        entry.cost, entry.source||'', entry.notes||''],
+      cells: {
+        B: entry.date, C: entry.partName, D: entry.kmRemoved,
+        G: entry.cost, H: entry.source||'', I: entry.notes||'',
+      },
     };
   }
   if(entry.type === 'moto_oil'){
-    // سجل شراء الزيت بالجملة ليس Excel Table مُسمّى — نطرحه كصف مالي ضمن tblSegel بتصنيف مخصص
+    // سجل شراء الزيت بالجملة — صف مالي ضمن tblSegel بتصنيف مخصص
     return {
       table: 'tblSegel', file: 'mali',
-      values: [null, entry.date, '🏍️ مكنة — شراء زيت بالجملة', null, null, entry.total, null,
-        '', '', `${entry.qty} لتر × ${entry.price} جنيه`, '', entry.notes||'', null],
+      cells: {
+        B: entry.date, C: '🏍️ مكنة — شراء زيت بالجملة', F: entry.total,
+        J: `${entry.qty} لتر × ${entry.price} جنيه`, L: entry.notes||'',
+      },
     };
   }
   return null;
@@ -1241,7 +1316,7 @@ async function attemptSync(){
       const rowSpec = buildRowForEntry(entry);
       if(!rowSpec) continue;
       try{
-        await graphAddTableRow(rowSpec.file, rowSpec.table, rowSpec.values);
+        await graphAddTableRow(rowSpec.file, rowSpec.table, rowSpec.cells);
         await markEntrySynced(entry.id);
       } catch(err){
         console.error('فشلت مزامنة عملية:', entry.id, err);
